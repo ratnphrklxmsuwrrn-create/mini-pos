@@ -111,4 +111,231 @@ export default function SellPage() {
   }
 
   // แก้ไขจำนวนของสินค้าที่อยู่ในตะกร้าโดยตรง
-  function handleCartQuantityChange(productId, newQty)
+  function handleCartQuantityChange(productId, newQty) {
+    const qty = parseInt(newQty, 10) || 0;
+    setCart((prevCart) =>
+      prevCart.map((item) =>
+        item.productId === productId ? { ...item, quantity: qty } : item
+      )
+    );
+    clearMessages();
+  }
+
+  // ยอดรวมทั้งบิล
+  const cartTotal = cart.reduce(
+    (sum, item) => sum + item.price * item.quantity,
+    0
+  );
+  const totalItemsCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+
+  // กดยืนยันขายทั้งบิล
+  async function handleCheckout() {
+    clearMessages();
+
+    if (cart.length === 0) {
+      setErrorMsg("ยังไม่มีสินค้าในตะกร้า");
+      return;
+    }
+
+    // ตรวจสอบจำนวนที่ถูกต้อง + stock เพียงพอ ก่อนบันทึกจริง
+    for (const item of cart) {
+      const product = products.find((p) => p.id === item.productId);
+      if (!product) {
+        setErrorMsg(`ไม่พบสินค้า: ${item.name}`);
+        return;
+      }
+      if (item.quantity <= 0) {
+        setErrorMsg(`จำนวนของ ${item.name} ต้องมากกว่า 0`);
+        return;
+      }
+      if (item.quantity > product.stock) {
+        setErrorMsg(
+          `${item.name} คงเหลือไม่พอ (คงเหลือ ${product.stock} ${product.unit})`
+        );
+        return;
+      }
+    }
+
+    setSelling(true);
+    const soldAt = new Date().toISOString();
+
+    // 1) บันทึกทุกรายการในตะกร้าลงตาราง sales ทีเดียว (bulk insert)
+    const salesRows = cart.map((item) => ({
+      product_id: item.productId,
+      product_name: item.name,
+      quantity: item.quantity,
+      total_price: item.price * item.quantity,
+      sold_at: soldAt,
+    }));
+
+    const { error: saleError } = await supabase.from("sales").insert(salesRows);
+
+    if (saleError) {
+      setErrorMsg("บันทึกการขายไม่สำเร็จ: " + saleError.message);
+      setSelling(false);
+      return;
+    }
+
+    // 2) อัปเดต stock ของสินค้าแต่ละตัวในตะกร้า
+    for (const item of cart) {
+      const product = products.find((p) => p.id === item.productId);
+      const newStock = product.stock - item.quantity;
+      const { error: stockError } = await supabase
+        .from("products")
+        .update({ stock: newStock })
+        .eq("id", item.productId);
+
+      if (stockError) {
+        setErrorMsg(
+          `บันทึกการขายสำเร็จ แต่ปรับสต็อก ${item.name} ไม่สำเร็จ: ` +
+            stockError.message
+        );
+        setSelling(false);
+        fetchProducts();
+        return;
+      }
+    }
+
+    // สำเร็จ: แจ้งเตือน, ล้างตะกร้า, โหลดสินค้าใหม่
+    setSuccessMsg(
+      `ขายสำเร็จ ${totalItemsCount} ชิ้น รวม ${cartTotal.toFixed(2)} บาท`
+    );
+    setCart([]);
+    setSelling(false);
+    fetchProducts();
+  }
+
+  return (
+    <div>
+      <h1>ขายสินค้า</h1>
+
+      {/* สรุปยอดรวมตัวใหญ่ ไว้บนสุด ให้ผู้ขายและลูกค้าเห็นชัดจากจอเดียวกัน */}
+      <div
+        className="card"
+        style={{
+          textAlign: "center",
+          position: "sticky",
+          top: 0,
+          zIndex: 1,
+        }}
+      >
+        <div style={{ fontSize: "1rem", color: "#6b7280" }}>ยอดรวมทั้งหมด</div>
+        <div style={{ fontSize: "3rem", fontWeight: 800, color: "#2563eb" }}>
+          {cartTotal.toFixed(2)} บาท
+        </div>
+        <div style={{ color: "#6b7280" }}>{totalItemsCount} ชิ้น ในตะกร้า</div>
+      </div>
+
+      {errorMsg && <p className="error">{errorMsg}</p>}
+      {successMsg && <p style={{ color: "#16a34a" }}>{successMsg}</p>}
+
+      {/* ฟอร์มเพิ่มสินค้าลงตะกร้า */}
+      <div className="card">
+        <h2>เลือกสินค้า</h2>
+        {loading ? (
+          <p>กำลังโหลดรายการสินค้า...</p>
+        ) : (
+          <form onSubmit={handleAddToCart}>
+            <div className="form-row">
+              <select
+                value={selectedProductId}
+                onChange={(e) => {
+                  setSelectedProductId(e.target.value);
+                  clearMessages();
+                }}
+                style={{ flex: "2 1 240px" }}
+              >
+                <option value="">-- เลือกสินค้า --</option>
+                {products.map((product) => (
+                  <option key={product.id} value={product.id}>
+                    {product.name} ({Number(product.price).toFixed(2)} บาท) -
+                    คงเหลือ {product.stock} {product.unit}
+                  </option>
+                ))}
+              </select>
+
+              <input
+                type="number"
+                min="1"
+                placeholder="จำนวน"
+                value={quantity}
+                onChange={(e) => {
+                  setQuantity(e.target.value);
+                  clearMessages();
+                }}
+                style={{ flex: "1 1 100px" }}
+              />
+
+              <button type="submit" style={{ flex: "0 0 auto" }}>
+                + เพิ่มลงตะกร้า
+              </button>
+            </div>
+
+            {selectedProduct && (
+              <p style={{ color: "#6b7280", fontSize: "0.9rem" }}>
+                คงเหลือหลังหักตะกร้า: {remainingStock} {selectedProduct.unit}
+              </p>
+            )}
+          </form>
+        )}
+      </div>
+
+      {/* ตะกร้าสินค้า */}
+      <div className="card">
+        <h2>ตะกร้าสินค้า ({cart.length} รายการ)</h2>
+
+        {cart.length === 0 ? (
+          <p>ยังไม่มีสินค้าในตะกร้า</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>ชื่อสินค้า</th>
+                <th>ราคา/หน่วย</th>
+                <th>จำนวน</th>
+                <th>ยอดรวม</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {cart.map((item) => (
+                <tr key={item.productId}>
+                  <td>{item.name}</td>
+                  <td>{item.price.toFixed(2)}</td>
+                  <td>
+                    <input
+                      type="number"
+                      min="1"
+                      value={item.quantity}
+                      onChange={(e) =>
+                        handleCartQuantityChange(item.productId, e.target.value)
+                      }
+                      style={{ width: "70px" }}
+                    />{" "}
+                    {item.unit}
+                  </td>
+                  <td>{(item.price * item.quantity).toFixed(2)}</td>
+                  <td>
+                    <button onClick={() => handleRemoveFromCart(item.productId)}>
+                      ลบ
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        <div style={{ marginTop: "16px", textAlign: "right" }}>
+          <button
+            onClick={handleCheckout}
+            disabled={selling || cart.length === 0}
+            style={{ fontSize: "1.1rem", padding: "12px 24px" }}
+          >
+            {selling ? "กำลังบันทึก..." : "ยืนยันการขายทั้งหมด"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

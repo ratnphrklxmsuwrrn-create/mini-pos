@@ -176,10 +176,17 @@ export default function SellPage() {
       return;
     }
 
-    // 2) อัปเดต stock ของสินค้าแต่ละตัวในตะกร้า
+    // 2) อัปเดต stock ของสินค้าแต่ละตัวในตะกร้า + ยิงแจ้งเตือน Telegram
+    const now = new Date().toLocaleString("th-TH", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+
     for (const item of cart) {
       const product = products.find((p) => p.id === item.productId);
       const newStock = product.stock - item.quantity;
+      const itemTotal = item.price * item.quantity;
+
       const { error: stockError } = await supabase
         .from("products")
         .update({ stock: newStock })
@@ -193,6 +200,28 @@ export default function SellPage() {
         setSelling(false);
         fetchProducts();
         return;
+      }
+
+      // งานที่ 1: แจ้งเตือน Order เข้าใหม่ (ไม่ await ให้บล็อก flow หลัก เพื่อไม่ให้ขายช้า)
+      const orderMessage =
+        `🛍️ <b>มีรายการขายใหม่!</b>\n` +
+        `- สินค้า: ${item.name}\n` +
+        `- จำนวน: ${item.quantity} ${item.unit}\n` +
+        `- ราคารวม: ${itemTotal.toFixed(2)} บาท\n` +
+        `- สต๊อกคงเหลือปัจจุบัน: ${newStock} ${item.unit}\n` +
+        `- เวลา: ${now}`;
+
+      sendTelegramNotification(orderMessage);
+
+      // งานที่ 2: แจ้งเตือน Low Stock ถ้าคงเหลือ <= เกณฑ์ที่กำหนด
+      if (newStock <= LOW_STOCK_THRESHOLD) {
+        const lowStockMessage =
+          `🚨 <b>[เตือนภัย] สต๊อกสินค้าใกล้หมด!</b>\n` +
+          `- สินค้า: ${item.name}\n` +
+          `- คงเหลือเพียง: ${newStock} ${item.unit}\n` +
+          `⚠️ กรุณาเติมสต๊อกสินค้าด่วน!`;
+
+        sendTelegramNotification(lowStockMessage);
       }
     }
 
@@ -339,3 +368,19 @@ export default function SellPage() {
     </div>
   );
 }
+// ฟังก์ชันส่งข้อความแจ้งเตือนผ่าน API Route ของเราเอง (ไม่ยิงตรงไปที่ Telegram จาก client)
+// ทำงานแบบ async/try-catch แยกจาก flow หลัก หากพังจะไม่กระทบการขาย
+async function sendTelegramNotification(message) {
+  try {
+    await fetch("/api/notify-telegram", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+  } catch (err) {
+    // แค่ log ไว้เฉยๆ ไม่ throw ต่อ เพื่อไม่ให้กระทบระบบขาย
+    console.error("ส่ง Telegram notification ไม่สำเร็จ:", err);
+  }
+}
+
+const LOW_STOCK_THRESHOLD = 5;
